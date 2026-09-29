@@ -243,6 +243,7 @@ throw new UnauthorizedException('用户名或密码错误');
 7. **一个领域一个模块**：`<domain>.module.ts` 聚合 entity、service、controller，再由 `app.module.ts` 引入。
 8. 与数据库交互优先使用 **TypeORM Repository / QueryBuilder**，不要手写字符串拼接 SQL（防止注入）。
 9. 遵循既有代码风格，不要引入新框架；新增依赖前先检查其它服务是否已使用。
+10. **禁止在生产环境依赖 `synchronize` 自动建表/改表**。任何表结构变更都必须通过 Migration 落地：修改实体 → 生成迁移 → 本地校验 → 提交代码，由容器启动流程自动执行（详见 10.5）。已提交的迁移文件视为历史，不得再修改或删除。
 
 ## 9. 如何新增一个服务
 
@@ -291,7 +292,7 @@ docker compose down -v       # 同时删除数据卷——会清空数据库！�
 docker compose up -d         # 重新启动
 ```
 
-> 单个服务重建时会有几秒该服务不可用。若业务不能接受中断，需要双实例 + 灰度方案（见 10.7）。
+> 单个服务重建时会有几秒该服务不可用。若业务不能接受中断，需要双实例 + 灰度方案（见 10.8）。
 
 ### 10.2 状态检查与健康检查
 
@@ -347,7 +348,56 @@ cat backups/pg_all_20260929.sql | docker exec -i platform-postgres psql -U appus
 - 做表结构变更、删除数据、升级版本等高危操作前，**必须先备份**。
 - 数据卷物理位置可用 `docker volume inspect <卷名>` 查看，但不要直接操作卷内文件，备份一律走 `pg_dump`。
 
-### 10.5 一台服务器运行多套环境
+### 10.5 数据库迁移（Migration）
+
+生产环境关闭了 TypeORM 的 `synchronize`，表结构变更一律通过 Migration 管理，保证结构可追溯、可重放。
+
+**运行机制**
+
+- 每个服务各有一套独立迁移：auth-service 操作 `auth_db`，stats-service 操作 `stats_db`。
+- 容器入口 [start-service.sh](deploy/start-service.sh) 会**先执行迁移、成功后再启动应用**；迁移失败则容器退出（fail-fast，不会带错启动）。
+- 迁移记录保存在各库的 `typeorm_migrations` 表，重复执行自动跳过，是幂等的。
+
+**日常开发（改表）流程**
+
+1. 修改/新增对应实体（`*.entity.ts`）。
+2. 在服务目录生成迁移（示例为 auth-service）：
+
+   ```bash
+   npm run migration:generate -w @app/auth-service -- src/migrations/AddUserPhone
+   ```
+
+3. 检查生成的迁移，确认 `up` / `down` 符合预期（尤其删列、删表等不可逆操作）。
+4. 本地执行并回滚一次，确认双向可用：
+
+   ```bash
+   npm run migration:run    -w @app/auth-service
+   npm run migration:revert -w @app/auth-service
+   npm run migration:run    -w @app/auth-service
+   ```
+
+5. 提交迁移文件与代码；部署时容器启动会自动应用。
+
+**容器内手动命令**（按需，连接信息由 compose 注入）
+
+```bash
+# 直接执行（幂等）
+docker exec platform-auth  node services/auth-service/dist/database/run-migrations.js
+docker exec platform-stats node services/stats-service/dist/database/run-migrations.js
+
+# 回滚最近一个迁移（使用编译后的 DataSource）
+docker exec -w /app/services/auth-service platform-auth \
+  npx typeorm migration:revert -d dist/database/data-source.js
+```
+
+**注意事项**
+
+- 迁移文件名前缀为时间戳，决定执行顺序，请勿手工改名。
+- 已提交、已上线的迁移不得再编辑；需修正请新增一个迁移。
+- 本地 `npm run dev` 默认仍开启 `synchronize` 以便快速开发，但最终结构以迁移为准。
+- 执行迁移前建议先按 10.4 备份一次。
+
+### 10.6 一台服务器运行多套环境
 
 同一台服务器可以并行运行多个 Compose 项目，Compose 用**项目名**（默认取目录名）隔离容器名、网络和数据卷。
 
@@ -365,7 +415,7 @@ docker compose ls                        # 查看正在运行的所有 Compose �
 
 多套环境各自使用独立数据卷时，数据库天然隔离；若多套服务共用一个 Postgres 实例，则必须为每套使用不同的库名。
 
-### 10.6 常见故障与处理
+### 10.7 常见故障与处理
 
 | 现象 | 可能原因 | 处理方式 |
 |------|---------|---------|
@@ -379,7 +429,7 @@ docker compose ls                        # 查看正在运行的所有 Compose �
 | 服务启动报实体列类型推断错误 | 可空列未显式声明类型 | 按「开发约定」第 4 条写全 `@Column({ type: ..., nullable: true })` |
 | 表结构变更后数据异常 | `synchronize` 自动同步删除/重命名了列 | 从备份恢复；危险变更前先备份并考虑改用 Migration |
 
-### 10.7 灰度发布现状
+### 10.8 灰度发布现状
 
 当前架构**不支持开箱即用的灰度发布**：网关代理目标为固定下游地址（见 `proxy.factory.ts`），且每个服务只有一个容器，更新方式是「旧容器停、新容器起」的替换式发布。
 
@@ -391,7 +441,7 @@ docker compose ls                        # 查看正在运行的所有 Compose �
 
 灰度的配套前提：数据库变更向后兼容（先加字段、兼容读写、全量后再清理）、镜像保留可回滚的版本标签、新旧版本日志与指标可区分（如响应头标记 `x-served-by`）。
 
-### 10.8 版本发布流程（Git）
+### 10.9 版本发布流程（Git）
 
 - 日常提交：`git add` → `git commit -m "feat/fix: 中文说明"` → `git push`。
 - **禁止提交 `.env` 等含密钥的文件**；新增配置项时同步更新对应的 `.env.example`（占位值）。

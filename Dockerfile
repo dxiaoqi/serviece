@@ -23,5 +23,7 @@ ARG SERVICE_NAME
 ENV SERVICE_NAME=${SERVICE_NAME}
 
 COPY --from=builder /app /app
+COPY deploy/start-service.sh /app/deploy/start-service.sh
+RUN chmod +x /app/deploy/start-service.sh
 
-CMD node services/${SERVICE_NAME}/dist/main.js
+CMD ["/bin/bash", "/app/deploy/start-service.sh"]

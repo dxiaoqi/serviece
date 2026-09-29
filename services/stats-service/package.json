@@ -5,7 +5,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/main.ts"
+    "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
+    "migration:run": "node dist/database/run-migrations.js",
+    "migration:run:ts": "ts-node src/database/run-migrations.ts",
+    "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/database/data-source.ts",
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
+    "migration:create": "typeorm-ts-node-commonjs migration:create src/migrations/custom"
   },
   "dependencies": {
     "@app/shared": "1.0.0",
@@ -24,6 +29,7 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.16.10",
+    "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.6.2"
   }
