@@ -36,6 +36,8 @@
 | auth-service | 3001 | 3001 | auth_db |
 | stats-service | 3002 | 3002 | stats_db |
 | postgres | 5432 | **5433** | 实例内含 auth_db / stats_db |
+| adminer | 8080 | **8080** | 数据库 Web 看板（只读账号登录） |
+| portainer | 9000 | **9000** | 服务器/容器状态与运维管理看板 |
 
 > 宿主机端口非标准值（3005 / 5433），是为了避让本机其他项目占用的 3000 / 5432。容器内部服务间通信仍使用标准端口（如 `http://auth-service:3001`）。修改映射请编辑 `docker-compose.yml`。
 
@@ -49,7 +51,8 @@ myseviece/
 ├── Dockerfile                   # 多服务共用的多阶段构建文件，通过 SERVICE_NAME 参数区分
 ├── docker-compose.yml           # 本地一键编排（postgres + 3 个服务）
 ├── deploy/
-│   └── init-db.sql              # PostgreSQL 首次启动时创建 auth_db / stats_db
+│   ├── init-db.sql              # PostgreSQL 首次启动时创建 auth_db / stats_db
+│   └── init-readonly.sh         # 首次初始化时创建只读账号并授予 SELECT（供看板使用）
 ├── libs/
 │   └── shared/                  # @app/shared 共享库
 │       └── src/
@@ -224,6 +227,12 @@ throw new UnauthorizedException('用户名或密码错误');
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | 数据库账号密码 |
 | `JWT_SECRET` | JWT 签名密钥，**生产环境必须修改** |
 | `GATEWAY_PORT` / `AUTH_SERVICE_PORT` / `STATS_SERVICE_PORT` | 各服务容器内监听端口 |
+| `OSS_BUCKET` / `OSS_PREFIX` | 异地备份的 OSS Bucket 名与目录前缀 |
+| `OSS_ENDPOINT` / `OSS_ENDPOINT_INTERNAL` | OSS 公网 / 内网 Endpoint（同地域服务器走内网，传输免费） |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | OSS 访问密钥，**仅限 RAM 子账号，禁止用主账号密钥** |
+| `POSTGRES_READONLY_USER` / `POSTGRES_READONLY_PASSWORD` | 数据库只读账号（看板用，仅 SELECT，不能修改） |
+| `ADMINER_PORT` | Adminer 看板 Web 端口（默认 8080） |
+| `PORTAINER_PORT` | Portainer 服务器看板 Web 端口（默认 9000） |
 
 ### 各服务 `.env`（仅本地 `npm run dev` 使用，容器内由 compose 注入）
 
@@ -348,6 +357,35 @@ cat backups/pg_all_20260929.sql | docker exec -i platform-postgres psql -U appus
 - 做表结构变更、删除数据、升级版本等高危操作前，**必须先备份**。
 - 数据卷物理位置可用 `docker volume inspect <卷名>` 查看，但不要直接操作卷内文件，备份一律走 `pg_dump`。
 
+**定时本地备份（Linux crontab）：**
+
+```bash
+# 安装：每天 03:30 自动执行 deploy/backup.sh（备份整个实例、压缩、滚动清理）
+bash deploy/install-schedule.sh
+
+# 卸载定时任务
+bash deploy/install-schedule.sh --uninstall
+
+# 手动立即执行一次
+bash deploy/backup.sh
+```
+
+- 备份产物：`backups/pg_all_<时间戳>.sql.gz`，默认本地保留 14 天（可用 `RETAIN_DAYS` 覆盖）。
+- 日志：`backups/backup.log`；cron 输出另见 `backups/cron.log`。
+
+**OSS 异地备份（防整机丢失）：**
+
+`deploy/backup.sh` 在本地备份成功后，会自动调用可执行的 `deploy/oss-upload.sh` 把备份上传到 OSS；上传失败只记警告，**不影响已完成的本地备份**。
+
+- 配置全部写在根目录 `.env` 的 `OSS_*`（见第 7 章）。`.env` 已被 Git 忽略，密钥不会进仓库；上传脚本本身不含密钥，可安全提交。
+- Endpoint 自动选择：优先同地域**内网** Endpoint（服务器与 Bucket 同地域时传输免费），不可达时回退公网；也可设 `OSS_USE_INTERNAL=true|false` 强制指定。
+- 系统未安装 ossutil 时，脚本会自动下载官方 ossutil 到 `deploy/bin/`（已被 Git 忽略），并校验 SHA256，服务器无需手动安装。
+- 建议为 Bucket 配置**生命周期规则**（如保留 180 天自动删除，或 90 天后沉降到低频/归档），避免备份无限堆积。
+
+> 安全：OSS 密钥务必使用仅授权该 Bucket 的 **RAM 子账号**；若密钥曾以明文外发，应立即在 RAM 中新建并轮换。备份账号至少授予 `oss:PutObject`；如需从 OSS 恢复，还要授予 `oss:GetObject`（可选 `oss:ListBucket`）。
+
+**从 OSS 恢复：** 先在 OSS 控制台或用 ossutil 下载对应 `.sql.gz`，`gzip -dc` 解压后，按上文“恢复整个实例”的方式导入。
+
 ### 10.5 数据库迁移（Migration）
 
 生产环境关闭了 TypeORM 的 `synchronize`，表结构变更一律通过 Migration 管理，保证结构可追溯、可重放。
@@ -453,6 +491,32 @@ git push origin v1.1.0
 ```
 
 标签命名遵循语义化版本 `vMAJOR.MINOR.PATCH`。标签推送到 GitHub 后，可在 Releases 页面基于标签编写发布说明。镜像建议使用与标签一致的版本号，不要只依赖 `latest`，以便随时回滚。
+
+### 10.10 运维看板（Adminer / 数据库只读浏览）
+
+平台集成了 [Adminer](https://www.adminer.org/) 作为数据库 Web 看板，随 compose 一起启动，用于在线浏览库表与导出数据。
+
+- **访问地址**：`http://<服务器IP>:8080/`（本地为 http://localhost:8080 ）。
+- **登录方式**：系统选 `PostgreSQL`，服务器已预填 `postgres`；使用根目录 `.env` 中的只读账号 `POSTGRES_READONLY_USER` / `POSTGRES_READONLY_PASSWORD` 登录，数据库名留空可在登录后选择 `auth_db` / `stats_db`。
+- **能做什么**：查看数据库/表结构、浏览表数据、查看索引、执行只读 `SELECT`、**导出（Export）整库或单表**。
+- **不能做什么**：不能插入、更新、删除、建表/建库。该限制由**数据库角色权限在底层强制**：只读账号仅被授予 `SELECT`，即使界面上仍显示“创建表/修改”等入口，提交后也会被数据库返回 `permission denied` 拒绝。
+- 只读账号由 `deploy/init-readonly.sh` 在数据卷首次初始化时创建；对**已存在**的数据卷需手动执行一次该脚本（脚本内同时设置了默认权限，Migration 新建的表也会自动只读）。
+
+> 生产安全：Adminer 本身只有数据库登录这一层防护，**不要把 8080 端口直接裸露公网**。建议在云安全组中仅放行指定办公 IP，或不开放该端口、改用 SSH 隧道访问（`ssh -L 8080:localhost:8080 user@server` 后访问本地 8080）。
+
+### 10.11 服务器与容器看板（Portainer）
+
+平台集成了 [Portainer CE](https://www.portainer.io/) 作为 Docker 运维看板，用于查看服务器/容器状态并管理本 Compose 栈。
+
+- **访问地址**：`http://<服务器IP>:9000/`（本地为 http://localhost:9000 ）。**首次打开需创建管理员用户名与强密码**（数据保存在 `portainer_data` 卷）。
+- **首次连接**：选择 `Get Started` / 本地 `Docker` 环境（已通过挂载 `/var/run/docker.sock` 自动接入本机 Docker）。
+- **能做什么**：
+  - 总览：容器数量、运行/停止状态、Docker 主机 CPU/内存占用；
+  - 容器列表：查看每个容器的状态、CPU/内存、端口映射，查看容器**日志**，进入容器控制台；
+  - 管理：启动 / 停止 / 重启单个容器（即重启某个服务），查看镜像、数据卷、网络。
+- **与命令行的关系**：日常排障用看板即可；涉及构建镜像、改环境变量、加新服务等仍在宿主机用 `docker compose` 操作，看板不会改你的 `docker-compose.yml`。
+
+> 安全（重要）：Portainer 挂载了宿主机的 `/var/run/docker.sock`，等于拥有这台机器 Docker 的**完整控制权**（可启停任意容器、挂载任意目录，潜在等同于 root）。因此 **9000 端口绝不能裸露公网**：务必在安全组只放行信任 IP，或直接走 SSH 隧道（`ssh -L 9000:localhost:9000 user@server`）。Portainer 会在首次访问强制设置管理员密码，请使用强密码。
 
 ## 11. 注意事项与已知限制
 

@@ -6,11 +6,14 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_READONLY_USER: ${POSTGRES_READONLY_USER}
+      POSTGRES_READONLY_PASSWORD: ${POSTGRES_READONLY_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./deploy/init-readonly.sh:/docker-entrypoint-initdb.d/init-readonly.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
@@ -78,5 +81,28 @@ services:
       - auth-service
       - stats-service
 
+  adminer:
+    image: adminer:4.8.1
+    container_name: platform-adminer
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "${ADMINER_PORT}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  portainer:
+    image: portainer/portainer-ce:2.21.4
+    container_name: platform-portainer
+    restart: unless-stopped
+    ports:
+      - "${PORTAINER_PORT}:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+
 volumes:
   pgdata:
+  portainer_data:
