@@ -1,0 +1,65 @@
+<%- include('partials/header') %>
+
+<div class="panel">
+  <div class="panel-header">容器列表（共 <%= containers.length %> 个）</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>容器名称</th>
+          <th>镜像</th>
+          <th>状态</th>
+          <th>端口</th>
+          <th>CPU</th>
+          <th>内存</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% containers.forEach(function(c) { %>
+          <tr>
+            <td>
+              <div style="font-weight:600;"><%= c.name %></div>
+              <div style="color:var(--muted);font-size:12px;"><%= c.shortId %></div>
+            </td>
+            <td><%= c.image %></td>
+            <td><span class="badge <%= c.running ? 'running' : 'exited' %>"><%= c.status %></span></td>
+            <td style="font-size:12px;"><%= c.ports %></td>
+            <td>
+              <div class="meter">
+                <div class="bar"><span style="width:<%= Math.min(c.cpuPercent,100) %>%"></span></div>
+                <span><%= c.cpuPercent.toFixed(1) %>%</span>
+              </div>
+            </td>
+            <td>
+              <div class="meter">
+                <div class="bar"><span style="width:<%= Math.min(c.memPercent,100) %>%"></span></div>
+                <span><%= c.memPercent.toFixed(1) %>%</span>
+              </div>
+              <div style="color:var(--muted);font-size:11px;margin-top:4px;">
+                <%= bytes(c.memUsage) %> / <%= bytes(c.memLimit) %>
+              </div>
+            </td>
+            <td style="white-space:nowrap;">
+              <a class="btn small" href="/containers/<%= c.id %>/logs">日志</a>
+              <% if (c.running) { %>
+                <form class="inline-form" method="post" action="/containers/<%= c.id %>/restart">
+                  <button class="btn small" type="submit">重启</button>
+                </form>
+                <form class="inline-form" method="post" action="/containers/<%= c.id %>/stop">
+                  <button class="btn small danger" type="submit">停止</button>
+                </form>
+              <% } else { %>
+                <form class="inline-form" method="post" action="/containers/<%= c.id %>/start">
+                  <button class="btn small primary" type="submit">启动</button>
+                </form>
+              <% } %>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

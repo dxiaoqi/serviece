@@ -1,0 +1,67 @@
+<%- include('../partials/header') %>
+
+<div class="toolbar">
+  <a class="btn" href="/databases/<%= db %>/tables">返回 <%= db %> 数据表</a>
+</div>
+
+<div class="alert info">只读账号下仅可执行 SELECT 等读操作；INSERT / UPDATE / DELETE / DDL 会被数据库拒绝。</div>
+
+<div class="panel">
+  <div class="panel-header">SQL 查询 - <%= db %></div>
+  <div class="panel-body">
+    <form method="post" action="/databases/<%= db %>/sql">
+      <textarea class="sql" name="sql" spellcheck="false"><%= sql %></textarea>
+      <div style="margin-top:14px;">
+        <button class="btn primary" type="submit">执行查询</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<% if (error) { %>
+  <div class="alert error">查询出错：<%= error %></div>
+<% } %>
+
+<% if (result) { %>
+  <div class="panel">
+    <div class="panel-header">
+      查询结果
+      <span style="color:var(--muted);font-weight:400;">返回 <%= result.rows.length %> 行</span>
+    </div>
+    <% if (result.columns.length > 0) { %>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <% result.columns.forEach(function(name) { %>
+                <th><%= name %></th>
+              <% }) %>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (result.rows.length === 0) { %>
+              <tr><td colspan="<%= result.columns.length %>" style="text-align:center;color:var(--muted);">结果集为空</td></tr>
+            <% } %>
+            <% result.rows.forEach(function(row) { %>
+              <tr>
+                <% row.forEach(function(val) { %>
+                  <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;">
+                    <% if (val === null || val === undefined) { %>
+                      <span style="color:var(--muted);">NULL</span>
+                    <% } else { %>
+                      <%= String(val) %>
+                    <% } %>
+                  </td>
+                <% }) %>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    <% } else { %>
+      <div class="panel-body">语句执行成功（无结果集）。</div>
+    <% } %>
+  </div>
+<% } %>
+
+<%- include('../partials/footer') %>

@@ -127,6 +127,73 @@ endpoint=$ENDPOINT
 EOF
 
 echo "上传到 OSS：oss://${OSS_BUCKET}/${OSS_PREFIX}/${FILE_NAME}（endpoint=${ENDPOINT}）"
-"$OSSUTIL" cp -f "$BACKUP_FILE" \
+if ! "$OSSUTIL" cp -f "$BACKUP_FILE" \
   "oss://${OSS_BUCKET}/${OSS_PREFIX}/${FILE_NAME}" \
-  -c "$TMP_CONF" -e "$ENDPOINT"
+  -c "$TMP_CONF" -e "$ENDPOINT"; then
+  echo "上传失败：ossutil cp 返回非零（${REMOTE_OBJECT:-}）。" >&2
+  exit 1
+fi
+
+# ===== 上传后巡检：回查 OSS 对象，比对大小与 MD5 =====
+REMOTE_OBJECT="oss://${OSS_BUCKET}/${OSS_PREFIX}/${FILE_NAME}"
+
+# 取本地文件大小（兼容 Linux/macOS）与 MD5
+if stat -c %s "$BACKUP_FILE" >/dev/null 2>&1; then
+  LOCAL_SIZE="$(stat -c %s "$BACKUP_FILE")"
+else
+  LOCAL_SIZE="$(stat -f %z "$BACKUP_FILE")"
+fi
+if command -v md5sum >/dev/null 2>&1; then
+  LOCAL_MD5="$(md5sum "$BACKUP_FILE" | awk '{print $1}')"
+else
+  LOCAL_MD5="$(md5 -q "$BACKUP_FILE")"
+fi
+
+# 巡检临时文件（退出即清理）
+VERIFY_DIR="$(mktemp -d)"
+VERIFY_FILE="$VERIFY_DIR/$FILE_NAME"
+cleanup_verify() { rm -rf "$VERIFY_DIR"; }
+trap 'cleanup_verify; cleanup' EXIT
+
+echo "上传后巡检：下载回查 ${REMOTE_OBJECT}"
+DL_OUT="$("$OSSUTIL" cp -f "$REMOTE_OBJECT" "$VERIFY_FILE" \
+  -c "$TMP_CONF" -e "$ENDPOINT" 2>&1)"
+DL_RC=$?
+
+# ossutil 在 403 时可能仍返回 0，因此必须结合“是否拿到完整文件”判断
+if [ "$DL_RC" -ne 0 ] || [ ! -s "$VERIFY_FILE" ]; then
+  if printf '%s\n' "$DL_OUT" | grep -q 'AccessDenied'; then
+    echo "巡检失败：RAM 子账号缺少 oss:GetObject / oss:HeadObject 权限，无法回查对象。" >&2
+    echo "  请在阿里云 RAM 为该密钥补充 oss:GetObject（内容级校验）或 oss:HeadObject（仅元数据）。" >&2
+  elif printf '%s\n' "$DL_OUT" | grep -q 'NoSuchKey'; then
+    echo "巡检失败：OSS 上未找到刚上传的对象（${REMOTE_OBJECT}）。" >&2
+  else
+    echo "巡检失败：下载远端对象失败（rc=${DL_RC}）。" >&2
+    printf '%s\n' "$DL_OUT" | sed 's/^/    /' >&2
+  fi
+  exit 1
+fi
+
+# 下载成功：以实际下载内容做大小 + MD5 内容级比对
+if stat -c %s "$VERIFY_FILE" >/dev/null 2>&1; then
+  REMOTE_SIZE="$(stat -c %s "$VERIFY_FILE")"
+else
+  REMOTE_SIZE="$(stat -f %z "$VERIFY_FILE")"
+fi
+if command -v md5sum >/dev/null 2>&1; then
+  REMOTE_MD5="$(md5sum "$VERIFY_FILE" | awk '{print $1}')"
+else
+  REMOTE_MD5="$(md5 -q "$VERIFY_FILE")"
+fi
+
+if [ "$REMOTE_SIZE" != "$LOCAL_SIZE" ]; then
+  echo "巡检失败：大小不一致（本地=${LOCAL_SIZE}，OSS=${REMOTE_SIZE}）。" >&2
+  exit 1
+fi
+if [ "$REMOTE_MD5" != "$LOCAL_MD5" ]; then
+  echo "巡检失败：MD5 不一致（本地=${LOCAL_MD5}，OSS=${REMOTE_MD5}）。" >&2
+  exit 1
+fi
+
+echo "巡检通过：对象存在，已下载回比，大小=${REMOTE_SIZE} 字节，MD5 一致。"
+exit 0

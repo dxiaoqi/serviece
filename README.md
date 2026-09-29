@@ -36,8 +36,7 @@
 | auth-service | 3001 | 3001 | auth_db |
 | stats-service | 3002 | 3002 | stats_db |
 | postgres | 5432 | **5433** | 实例内含 auth_db / stats_db |
-| adminer | 8080 | **8080** | 数据库 Web 看板（只读账号登录） |
-| portainer | 9000 | **9000** | 服务器/容器状态与运维管理看板 |
+| admin-dashboard | 3100 | **3100** | Node 自研运维管理台（中文，含服务器/容器/数据库管理） |
 
 > 宿主机端口非标准值（3005 / 5433），是为了避让本机其他项目占用的 3000 / 5432。容器内部服务间通信仍使用标准端口（如 `http://auth-service:3001`）。修改映射请编辑 `docker-compose.yml`。
 
@@ -49,10 +48,10 @@ myseviece/
 ├── tsconfig.base.json           # 所有包共享的 TS 基础配置
 ├── .env                         # docker-compose 使用的环境变量（密钥/端口）
 ├── Dockerfile                   # 多服务共用的多阶段构建文件，通过 SERVICE_NAME 参数区分
-├── docker-compose.yml           # 本地一键编排（postgres + 3 个服务）
+├── docker-compose.yml           # 一键编排（postgres + 3 业务服务 + 管理台）
 ├── deploy/
 │   ├── init-db.sql              # PostgreSQL 首次启动时创建 auth_db / stats_db
-│   └── init-readonly.sh         # 首次初始化时创建只读账号并授予 SELECT（供看板使用）
+│   └── init-readonly.sh         # 首次初始化时创建只读账号并授予 SELECT（供管理台使用）
 ├── libs/
 │   └── shared/                  # @app/shared 共享库
 │       └── src/
@@ -64,7 +63,8 @@ myseviece/
 └── services/
     ├── api-gateway/             # @app/api-gateway
     ├── auth-service/            # @app/auth-service
-    └── stats-service/           # @app/stats-service
+    ├── stats-service/           # @app/stats-service
+    └── admin-dashboard/         # @app/admin-dashboard 运维管理台（EJS 视图 + public 静态资源）
 ```
 
 单个服务内部统一采用 NestJS 标准结构：
@@ -230,9 +230,10 @@ throw new UnauthorizedException('用户名或密码错误');
 | `OSS_BUCKET` / `OSS_PREFIX` | 异地备份的 OSS Bucket 名与目录前缀 |
 | `OSS_ENDPOINT` / `OSS_ENDPOINT_INTERNAL` | OSS 公网 / 内网 Endpoint（同地域服务器走内网，传输免费） |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | OSS 访问密钥，**仅限 RAM 子账号，禁止用主账号密钥** |
-| `POSTGRES_READONLY_USER` / `POSTGRES_READONLY_PASSWORD` | 数据库只读账号（看板用，仅 SELECT，不能修改） |
-| `ADMINER_PORT` | Adminer 看板 Web 端口（默认 8080） |
-| `PORTAINER_PORT` | Portainer 服务器看板 Web 端口（默认 9000） |
+| `POSTGRES_READONLY_USER` / `POSTGRES_READONLY_PASSWORD` | 数据库只读账号（管理台用，仅 SELECT，不能修改） |
+| `DASHBOARD_PORT` | 管理台 Web 端口（默认 3100） |
+| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | 管理台登录账号密码，**生产环境必须修改** |
+| `DASHBOARD_SESSION_SECRET` | 管理台会话加密密钥，生产环境改为随机长字符串 |
 
 ### 各服务 `.env`（仅本地 `npm run dev` 使用，容器内由 compose 注入）
 
@@ -380,9 +381,10 @@ bash deploy/backup.sh
 - 配置全部写在根目录 `.env` 的 `OSS_*`（见第 7 章）。`.env` 已被 Git 忽略，密钥不会进仓库；上传脚本本身不含密钥，可安全提交。
 - Endpoint 自动选择：优先同地域**内网** Endpoint（服务器与 Bucket 同地域时传输免费），不可达时回退公网；也可设 `OSS_USE_INTERNAL=true|false` 强制指定。
 - 系统未安装 ossutil 时，脚本会自动下载官方 ossutil 到 `deploy/bin/`（已被 Git 忽略），并校验 SHA256，服务器无需手动安装。
+- **上传后巡检（内容级校验）**：`ossutil cp` 成功后，脚本立即把该对象**重新下载**回临时文件，与本地原文件逐字节比对**大小 + MD5**。相比只读取元数据，这种方式直接验证了 OSS 上存的内容确实完整无损、与源文件一致；对象缺失、下载失败（含 403，ossutil 在 403 时可能仍返回 0，脚本以“是否拿到完整文件”兜底判断）或大小/MD5 任一不符，脚本都会以非零码退出，`backup.sh` 会把本次 OSS 备份记为失败。巡检临时文件退出即删。该机制依赖 `oss:GetObject` 权限。
 - 建议为 Bucket 配置**生命周期规则**（如保留 180 天自动删除，或 90 天后沉降到低频/归档），避免备份无限堆积。
 
-> 安全：OSS 密钥务必使用仅授权该 Bucket 的 **RAM 子账号**；若密钥曾以明文外发，应立即在 RAM 中新建并轮换。备份账号至少授予 `oss:PutObject`；如需从 OSS 恢复，还要授予 `oss:GetObject`（可选 `oss:ListBucket`）。
+> 安全：OSS 密钥务必使用仅授权该 Bucket 的 **RAM 子账号**；若密钥曾以明文外发，应立即在 RAM 中新建并轮换。备份账号至少授予 `oss:PutObject` + `oss:GetObject`（GetObject 既用于上传后下载回比巡检，也用于从 OSS 恢复）；如需在命令行/界面列目录，再授予 `oss:ListBucket`；如需脚本自动删除过期对象，再授予 `oss:DeleteObject`。建议自定义策略并将资源限定到 `acs:oss:*:*:<Bucket>/<前缀>/*`。
 
 **从 OSS 恢复：** 先在 OSS 控制台或用 ossutil 下载对应 `.sql.gz`，`gzip -dc` 解压后，按上文“恢复整个实例”的方式导入。
 
@@ -492,31 +494,25 @@ git push origin v1.1.0
 
 标签命名遵循语义化版本 `vMAJOR.MINOR.PATCH`。标签推送到 GitHub 后，可在 Releases 页面基于标签编写发布说明。镜像建议使用与标签一致的版本号，不要只依赖 `latest`，以便随时回滚。
 
-### 10.10 运维看板（Adminer / 数据库只读浏览）
+### 10.10 运维管理台（Node 自研，中文界面）
 
-平台集成了 [Adminer](https://www.adminer.org/) 作为数据库 Web 看板，随 compose 一起启动，用于在线浏览库表与导出数据。
+平台内置一个用 **Node.js / NestJS** 自研的全中文运维管理台（`services/admin-dashboard`），随 compose 一起启动，**一个入口同时替代了原 Adminer（数据库）与 Portainer（容器/主机）两套外部工具**，无需再维护 PHP / Go 组件。
 
-- **访问地址**：`http://<服务器IP>:8080/`（本地为 http://localhost:8080 ）。
-- **登录方式**：系统选 `PostgreSQL`，服务器已预填 `postgres`；使用根目录 `.env` 中的只读账号 `POSTGRES_READONLY_USER` / `POSTGRES_READONLY_PASSWORD` 登录，数据库名留空可在登录后选择 `auth_db` / `stats_db`。
-- **能做什么**：查看数据库/表结构、浏览表数据、查看索引、执行只读 `SELECT`、**导出（Export）整库或单表**。
-- **不能做什么**：不能插入、更新、删除、建表/建库。该限制由**数据库角色权限在底层强制**：只读账号仅被授予 `SELECT`，即使界面上仍显示“创建表/修改”等入口，提交后也会被数据库返回 `permission denied` 拒绝。
-- 只读账号由 `deploy/init-readonly.sh` 在数据卷首次初始化时创建；对**已存在**的数据卷需手动执行一次该脚本（脚本内同时设置了默认权限，Migration 新建的表也会自动只读）。
+- **访问地址**：`http://<服务器IP>:3100/`（本地为 http://localhost:3100 ）。
+- **登录方式**：使用根目录 `.env` 中的 `DASHBOARD_USER` / `DASHBOARD_PASSWORD` 登录（基于服务端 Session，未登录访问任何页面自动跳转登录页）。
+- **技术构成**：NestJS + EJS 模板（服务端渲染）+ `dockerode`（经 `/var/run/docker.sock` 操作 Docker）+ `pg`（只读账号连接 PostgreSQL）。
 
-> 生产安全：Adminer 本身只有数据库登录这一层防护，**不要把 8080 端口直接裸露公网**。建议在云安全组中仅放行指定办公 IP，或不开放该端口、改用 SSH 隧道访问（`ssh -L 8080:localhost:8080 user@server` 后访问本地 8080）。
+**三大功能模块：**
 
-### 10.11 服务器与容器看板（Portainer）
+1. **系统总览**：主机名称、操作系统/架构、内核、Docker 版本，CPU 核数与总内存，磁盘总量与占用，容器/镜像/数据卷/网络数量概览。
+2. **容器管理**：列出全部容器及镜像、运行状态、端口映射；在线查看容器**日志**；对单个容器执行**启动 / 停止 / 重启**（即重启某个服务）。
+3. **数据库管理（只读）**：
+   - 浏览数据库列表、表列表、表结构（字段/类型/可空/默认值）与表数据（分页）；
+   - 内置 **SQL 查询**窗口，仅允许 `SELECT` / `WITH` 等只读语句，`DROP`/`INSERT`/`UPDATE`/`DELETE` 等会被服务端直接拦截；
+   - 支持单表 **导出 CSV**（带 UTF-8 BOM，Excel 打开中文不乱码）。
+   - 写操作由**数据库角色权限在底层双重强制**：管理台使用 `POSTGRES_READONLY_USER` 只读账号，仅被授予 `SELECT`，任何写入都会被数据库返回 `permission denied`。只读账号由 `deploy/init-readonly.sh` 在数据卷首次初始化时创建（对已存在的数据卷需手动执行一次）。
 
-平台集成了 [Portainer CE](https://www.portainer.io/) 作为 Docker 运维看板，用于查看服务器/容器状态并管理本 Compose 栈。
-
-- **访问地址**：`http://<服务器IP>:9000/`（本地为 http://localhost:9000 ）。**首次打开需创建管理员用户名与强密码**（数据保存在 `portainer_data` 卷）。
-- **首次连接**：选择 `Get Started` / 本地 `Docker` 环境（已通过挂载 `/var/run/docker.sock` 自动接入本机 Docker）。
-- **能做什么**：
-  - 总览：容器数量、运行/停止状态、Docker 主机 CPU/内存占用；
-  - 容器列表：查看每个容器的状态、CPU/内存、端口映射，查看容器**日志**，进入容器控制台；
-  - 管理：启动 / 停止 / 重启单个容器（即重启某个服务），查看镜像、数据卷、网络。
-- **与命令行的关系**：日常排障用看板即可；涉及构建镜像、改环境变量、加新服务等仍在宿主机用 `docker compose` 操作，看板不会改你的 `docker-compose.yml`。
-
-> 安全（重要）：Portainer 挂载了宿主机的 `/var/run/docker.sock`，等于拥有这台机器 Docker 的**完整控制权**（可启停任意容器、挂载任意目录，潜在等同于 root）。因此 **9000 端口绝不能裸露公网**：务必在安全组只放行信任 IP，或直接走 SSH 隧道（`ssh -L 9000:localhost:9000 user@server`）。Portainer 会在首次访问强制设置管理员密码，请使用强密码。
+> 安全（重要）：管理台挂载了宿主机 `/var/run/docker.sock`，对容器的启停操作等于拥有这台机器 Docker 的控制权。因此 **3100 端口不要直接裸露公网**：在云安全组仅放行信任的办公 IP，或不开放该端口、改用 SSH 隧道访问（`ssh -L 3100:localhost:3100 user@server` 后访问本地 3100）。同时务必修改默认的 `DASHBOARD_PASSWORD` 并为 `DASHBOARD_SESSION_SECRET` 设置随机长字符串。
 
 ## 11. 注意事项与已知限制
 

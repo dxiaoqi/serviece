@@ -1,0 +1,38 @@
+<%- include('../partials/header') %>
+
+<div class="toolbar">
+  <a class="btn" href="/databases">返回数据库列表</a>
+</div>
+
+<div class="panel">
+  <div class="panel-header"><%= db %> 的数据表</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>类型</th>
+          <th>行数（估算）</th>
+          <th>占用空间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% tables.forEach(function(t) { %>
+          <tr>
+            <td style="font-weight:600;"><%= t.name %></td>
+            <td><%= t.type %></td>
+            <td><%= t.rows %></td>
+            <td><%= bytes(t.size) %></td>
+            <td style="white-space:nowrap;">
+              <a class="btn small" href="/databases/<%= db %>/tables/<%= t.name %>">查看数据</a>
+              <a class="btn small" href="/databases/<%= db %>/tables/<%= t.name %>/export">导出 CSV</a>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<%- include('../partials/footer') %>

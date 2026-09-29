@@ -81,28 +81,31 @@ services:
       - auth-service
       - stats-service
 
-  adminer:
-    image: adminer:4.8.1
-    container_name: platform-adminer
+  admin-dashboard:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: admin-dashboard
+    container_name: platform-admin-dashboard
     restart: unless-stopped
     environment:
-      ADMINER_DEFAULT_SERVER: postgres
+      NODE_ENV: production
+      DASHBOARD_PORT: 3100
+      DASHBOARD_USER: ${DASHBOARD_USER}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3005}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      POSTGRES_READONLY_USER: ${POSTGRES_READONLY_USER}
+      POSTGRES_READONLY_PASSWORD: ${POSTGRES_READONLY_PASSWORD}
     ports:
-      - "${ADMINER_PORT}:8080"
+      - "${DASHBOARD_PORT}:3100"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
 
-  portainer:
-    image: portainer/portainer-ce:2.21.4
-    container_name: platform-portainer
-    restart: unless-stopped
-    ports:
-      - "${PORTAINER_PORT}:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-
 volumes:
   pgdata:
-  portainer_data:

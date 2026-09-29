@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %> - 运维管理台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">运维管理台</div>
+    <nav>
+      <a href="/" class="<%= active === 'overview' ? 'active' : '' %>">总览</a>
+      <a href="/containers" class="<%= active === 'containers' ? 'active' : '' %>">容器管理</a>
+      <a href="/databases" class="<%= active === 'database' ? 'active' : '' %>">数据库</a>
+      <a href="/api-center" class="<%= active === 'api-center' ? 'active' : '' %>">接口中心</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div style="margin-bottom:10px;color:#94a3b8;">当前用户：<%= user && user.username %></div>
+      <form action="/logout" method="post" class="inline-form">
+        <button class="btn small" type="submit">退出登录</button>
+      </form>
+    </div>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <h1><%= title %></h1>
+    </div>
+    <main class="content">

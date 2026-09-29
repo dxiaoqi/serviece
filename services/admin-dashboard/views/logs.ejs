@@ -1,0 +1,17 @@
+<%- include('partials/header') %>
+
+<div class="toolbar">
+  <span style="color:var(--muted);">容器 ID：<%= id %></span>
+  <form method="get" action="/containers/<%= id %>/logs" class="inline-form">
+    <select name="tail" class="btn" onchange="this.form.submit()">
+      <% [100, 300, 500, 1000].forEach(function(t) { %>
+        <option value="<%= t %>" <%= t === tail ? 'selected' : '' %>>最近 <%= t %> 行</option>
+      <% }) %>
+    </select>
+  </form>
+  <a class="btn" href="/containers">返回容器列表</a>
+</div>
+
+<div class="logs-box"><%= logText %></div>
+
+<%- include('partials/footer') %>

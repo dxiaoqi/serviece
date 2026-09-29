@@ -1,0 +1,79 @@
+<%- include('partials/header') %>
+
+<div class="cards">
+  <div class="card">
+    <div class="label">运行中容器</div>
+    <div class="value" style="color:var(--green)"><%= info.containersRunning %></div>
+    <div class="sub">共 <%= info.containersTotal %> 个容器</div>
+  </div>
+  <div class="card">
+    <div class="label">已停止容器</div>
+    <div class="value" style="color:var(--red)"><%= info.containersStopped %></div>
+    <div class="sub">暂停 <%= info.containersPaused %> 个</div>
+  </div>
+  <div class="card">
+    <div class="label">镜像数量</div>
+    <div class="value"><%= info.imagesCount %></div>
+    <div class="sub">占用 <%= bytes(info.imagesDisk) %></div>
+  </div>
+  <div class="card">
+    <div class="label">CPU 核数</div>
+    <div class="value"><%= info.cpus %></div>
+    <div class="sub">总内存 <%= bytes(info.memTotal) %></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">主机信息</div>
+  <div class="panel-body">
+    <div class="kv">
+      <div class="k">主机名称</div><div><%= info.name %></div>
+      <div class="k">操作系统</div><div><%= info.os %>（<%= info.osType %> / <%= info.arch %>）</div>
+      <div class="k">内核版本</div><div><%= info.kernel %></div>
+      <div class="k">Docker 版本</div><div><%= info.dockerVersion %>（API <%= info.apiVersion %>）</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    容器资源概览
+    <a class="btn small" href="/containers">进入容器管理</a>
+  </div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>容器</th>
+          <th>镜像</th>
+          <th>状态</th>
+          <th>CPU</th>
+          <th>内存</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% containers.forEach(function(c) { %>
+          <tr>
+            <td><a href="/containers/<%= c.id %>/logs"><%= c.name %></a></td>
+            <td><%= c.image %></td>
+            <td><span class="badge <%= c.running ? 'running' : 'exited' %>"><%= c.status %></span></td>
+            <td>
+              <div class="meter">
+                <div class="bar"><span style="width:<%= Math.min(c.cpuPercent,100) %>%"></span></div>
+                <span><%= c.cpuPercent.toFixed(1) %>%</span>
+              </div>
+            </td>
+            <td>
+              <div class="meter">
+                <div class="bar"><span style="width:<%= Math.min(c.memPercent,100) %>%"></span></div>
+                <span><%= c.memPercent.toFixed(1) %>%</span>
+              </div>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

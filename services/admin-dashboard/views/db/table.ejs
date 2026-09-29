@@ -1,0 +1,83 @@
+<%- include('../partials/header') %>
+
+<div class="toolbar">
+  <a class="btn" href="/databases/<%= db %>/tables">返回 <%= db %> 数据表</a>
+  <a class="btn" href="/databases/<%= db %>/tables/<%= table %>/export">导出 CSV</a>
+</div>
+
+<div class="panel">
+  <div class="panel-header">字段结构</div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>字段名</th>
+          <th>类型</th>
+          <th>可空</th>
+          <th>默认值</th>
+          <th>主键</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% columnsInfo.forEach(function(col) { %>
+          <tr>
+            <td style="font-weight:600;"><%= col.name %></td>
+            <td><%= col.type %></td>
+            <td><%= col.nullable ? '是' : '否' %></td>
+            <td><%= col.default || '—' %></td>
+            <td><%= col.isPrimary ? '是' : '—' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    表数据
+    <span style="color:var(--muted);font-weight:400;">共 <%= total %> 行</span>
+  </div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <% data.columns.forEach(function(name) { %>
+            <th><%= name %></th>
+          <% }) %>
+        </tr>
+      </thead>
+      <tbody>
+        <% if (data.rows.length === 0) { %>
+          <tr><td colspan="<%= data.columns.length %>" style="text-align:center;color:var(--muted);">暂无数据</td></tr>
+        <% } %>
+        <% data.rows.forEach(function(row) { %>
+          <tr>
+            <% row.forEach(function(val) { %>
+              <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;">
+                <% if (val === null || val === undefined) { %>
+                  <span style="color:var(--muted);">NULL</span>
+                <% } else { %>
+                  <%= String(val) %>
+                <% } %>
+              </td>
+            <% }) %>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <div class="panel-body">
+    <div class="pagination">
+      <% if (currentPage > 1) { %>
+        <a class="btn small" href="?page=<%= currentPage - 1 %>">上一页</a>
+      <% } %>
+      <span>第 <%= currentPage %> / <%= totalPages %> 页</span>
+      <% if (currentPage < totalPages) { %>
+        <a class="btn small" href="?page=<%= currentPage + 1 %>">下一页</a>
+      <% } %>
+    </div>
+  </div>
+</div>
+
+<%- include('../partials/footer') %>
