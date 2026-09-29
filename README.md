@@ -264,7 +264,147 @@ throw new UnauthorizedException('用户名或密码错误');
 
 > 根 workspace 通过 `"workspaces": ["libs/*", "services/*"]` 自动纳入新目录，无需手动登记。
 
-## 10. 注意事项与已知限制
+## 10. 运维指南（Agent 执行运维操作前必读）
+
+> 原则：**改动最小化**——改谁动谁，不要为了单点变更重启全部服务；任何涉及数据的操作，先备份再执行。
+
+### 10.1 服务更新与重启
+
+日常调整遵循「改谁重建谁」。`docker compose up -d` 只会重建配置/镜像发生变化的服务，未改动的容器保持运行。
+
+| 变更内容 | 执行操作 | 影响范围 |
+|----------|---------|---------|
+| 某个服务的业务代码 | `docker compose up -d --build <服务名>` | 仅该服务，重建期间其请求有秒级中断 |
+| 网关路由 / 公开路径白名单 | `docker compose up -d --build api-gateway` | 仅网关，重启秒级内新请求无法进入 |
+| `docker-compose.yml`（环境变量、端口、新服务） | `docker compose up -d` | 仅配置变化的服务，Compose 自动比对 |
+| 实体（entity）字段 | 重启对应服务（当前 `synchronize: true` 自动同步表结构） | 仅该服务 |
+| `libs/shared` 共享库 | `npm run build:shared` 后重建所有引用它的服务 | 可能是全部服务 |
+| 数据库初始化脚本 / 数据库账号密码 | `docker compose down` 后重新 `up` | 全部服务 |
+
+可用的 `<服务名>`：`api-gateway`、`auth-service`、`stats-service`、`postgres`。
+
+完整停止与重启：
+
+```bash
+docker compose down          # 停止并移除所有容器、网络（保留数据卷，数据不丢）
+docker compose down -v       # 同时删除数据卷——会清空数据库！无备份时禁止使用
+docker compose up -d         # 重新启动
+```
+
+> 单个服务重建时会有几秒该服务不可用。若业务不能接受中断，需要双实例 + 灰度方案（见 10.7）。
+
+### 10.2 状态检查与健康检查
+
+```bash
+docker compose ps                 # 查看各容器运行状态（注意 STATUS / HEALTH 列）
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+curl -s http://localhost:3005/health          # 网关健康检查
+curl -s http://localhost:3001/health          # 直连 auth-service（绕过网关）
+curl -s http://localhost:3002/health          # 直连 stats-service
+```
+
+健康的判断标准：4 个容器均为 `Up`，其中 `postgres` 为 `healthy`；`/health` 返回 HTTP 200。
+
+### 10.3 日志排查
+
+```bash
+docker compose logs -f                    # 跟踪全部服务日志
+docker compose logs -f auth-service       # 只跟踪某一个服务
+docker compose logs --tail=100 stats-service
+docker compose logs --since=30m api-gateway
+```
+
+排查顺序建议：先看网关日志确认请求是否进入、是否被鉴权拦截或代理失败（503）；再看对应下游服务日志；涉及连接报错再看 postgres 日志。
+
+### 10.4 数据库备份与恢复
+
+数据库容器名 `platform-postgres`，实例内有 `auth_db`、`stats_db` 两个库。以下命令在项目根目录执行（账号取 `.env` 中的 `POSTGRES_USER`，默认 `appuser`）。
+
+**备份（导出为 SQL 文件，建议按日期命名）：**
+
+```bash
+# 备份单个库
+docker exec platform-postgres pg_dump -U appuser auth_db > backups/auth_db_$(date +%Y%m%d).sql
+docker exec platform-postgres pg_dump -U appuser stats_db > backups/stats_db_$(date +%Y%m%d).sql
+
+# 一次性备份整个实例（含两个库与角色定义）
+docker exec platform-postgres pg_dumpall -U appuser > backups/pg_all_$(date +%Y%m%d).sql
+```
+
+**恢复：**
+
+```bash
+# 恢复单个库（目标库需已存在）
+cat backups/auth_db_20260929.sql | docker exec -i platform-postgres psql -U appuser -d auth_db
+
+# 恢复整个实例
+cat backups/pg_all_20260929.sql | docker exec -i platform-postgres psql -U appuser
+```
+
+注意事项：
+
+- 执行备份前先确认磁盘剩余空间足够；备份文件不要提交到 Git（`backups/` 已建议忽略，如未忽略需加入 `.gitignore`）。
+- 做表结构变更、删除数据、升级版本等高危操作前，**必须先备份**。
+- 数据卷物理位置可用 `docker volume inspect <卷名>` 查看，但不要直接操作卷内文件，备份一律走 `pg_dump`。
+
+### 10.5 一台服务器运行多套环境
+
+同一台服务器可以并行运行多个 Compose 项目，Compose 用**项目名**（默认取目录名）隔离容器名、网络和数据卷。
+
+```bash
+docker compose -p env-a up -d           # 在不同目录或用 -p 指定不同项目名
+docker compose -p env-b up -d
+docker compose ls                        # 查看正在运行的所有 Compose 项目
+```
+
+并行多套时必须处理三个冲突点：
+
+1. **`container_name` 冲突**：当前 compose 文件写死了 `platform-postgres` 等全局唯一的容器名，同机起第二套会报名称冲突。多实例场景应删掉 `container_name`，改用 Compose 自动生成的 `<项目名>-<服务名>-1`。
+2. **宿主机端口冲突**：每套环境的宿主机端口必须不同。建议把映射参数化（如 `"${GATEWAY_HOST_PORT:-3005}:3000"`），每套通过独立的 `--env-file` 注入端口，不改 compose 本体。
+3. **网络隔离**：不同 Compose 项目网络互不相通，不能跨项目用服务名访问。多项目对外建议在最前面加一层主机级 Nginx，按域名（如 a.example.com / b.example.com）分流到各自端口。
+
+多套环境各自使用独立数据卷时，数据库天然隔离；若多套服务共用一个 Postgres 实例，则必须为每套使用不同的库名。
+
+### 10.6 常见故障与处理
+
+| 现象 | 可能原因 | 处理方式 |
+|------|---------|---------|
+| 容器反复重启 / `Exited` | 配置错误、数据库未就绪 | `docker compose logs <服务名>` 看启动报错 |
+| postgres 一直 `unhealthy` | 数据卷损坏或初始化异常 | 看 postgres 日志；必要时备份后 `down -v` 重建（会清数据） |
+| 接口返回 401「缺少登录令牌」 | 访问了需登录接口但未带 Token，或公开路径未登记 | 补 `Authorization` 头；公开接口需在网关 `PUBLIC_PATHS` 登记 |
+| 接口返回 503 | 网关到下游服务的代理失败，下游不可达 | 检查下游容器状态与服务间 URL、端口 |
+| 接口返回 429 | 触发网关限流 | 降低请求频率或调整限流配置 |
+| 改了代码但行为没变 | 未重建镜像 / 浏览器或客户端缓存 | `--build` 重建对应服务；容器内确认代码已更新 |
+| 端口绑定失败 `address already in use` | 宿主机端口被其他容器/进程占用 | 修改 compose 宿主机端口映射，不要改容器内端口 |
+| 服务启动报实体列类型推断错误 | 可空列未显式声明类型 | 按「开发约定」第 4 条写全 `@Column({ type: ..., nullable: true })` |
+| 表结构变更后数据异常 | `synchronize` 自动同步删除/重命名了列 | 从备份恢复；危险变更前先备份并考虑改用 Migration |
+
+### 10.7 灰度发布现状
+
+当前架构**不支持开箱即用的灰度发布**：网关代理目标为固定下游地址（见 `proxy.factory.ts`），且每个服务只有一个容器，更新方式是「旧容器停、新容器起」的替换式发布。
+
+如需灰度，推荐在现有网关扩展轻量分流（成本最低）：
+
+- Compose 内为同一服务同时部署稳定版与 canary 版两个容器；
+- 网关代理支持按请求头（如 `x-canary: true`）、JWT 用户白名单、权重比例决定转发目标；
+- 验证 canary 版本无误后逐步提高权重至 100%，再下线旧容器。
+
+灰度的配套前提：数据库变更向后兼容（先加字段、兼容读写、全量后再清理）、镜像保留可回滚的版本标签、新旧版本日志与指标可区分（如响应头标记 `x-served-by`）。
+
+### 10.8 版本发布流程（Git）
+
+- 日常提交：`git add` → `git commit -m "feat/fix: 中文说明"` → `git push`。
+- **禁止提交 `.env` 等含密钥的文件**；新增配置项时同步更新对应的 `.env.example`（占位值）。
+- 里程碑版本打带注释的标签并推送：
+
+```bash
+git tag -a v1.1.0 -m "发布 v1.1.0：<变更摘要>"
+git push origin v1.1.0
+```
+
+标签命名遵循语义化版本 `vMAJOR.MINOR.PATCH`。标签推送到 GitHub 后，可在 Releases 页面基于标签编写发布说明。镜像建议使用与标签一致的版本号，不要只依赖 `latest`，以便随时回滚。
+
+## 11. 注意事项与已知限制
 
 - **`synchronize: true`**：各服务当前启用 TypeORM 自动建表，便于快速开发。**上生产前必须改为 Migration 管理**，避免实体改动导致数据丢失或表结构被意外修改。
 - **JWT 密钥**：默认值仅用于本地，生产部署务必通过环境变量注入强随机 `JWT_SECRET`。
@@ -272,7 +412,7 @@ throw new UnauthorizedException('用户名或密码错误');
 - **端口避让**：如本机端口与现有容器冲突，调整 `docker-compose.yml` 的宿主机映射即可，不要改动容器内端口与服务间 URL。
 - 网关代理异常（下游不可达）统一返回 503，便于客户端区分「业务错误」与「基础设施错误」。
 
-## 11. 常用命令速查
+## 12. 常用命令速查
 
 ```bash
 npm install                 # 安装全部依赖
