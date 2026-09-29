@@ -1,0 +1,24 @@
+{
+  "name": "myseviece-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "基于 NestJS 的微服务后端平台",
+  "workspaces": [
+    "libs/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w @app/shared",
+    "build": "npm run build:shared && npm run build --workspaces --if-present",
+    "dev:shared": "npm run dev -w @app/shared",
+    "dev:auth": "npm run dev -w @app/auth-service",
+    "dev:stats": "npm run dev -w @app/stats-service",
+    "dev:gateway": "npm run dev -w @app/api-gateway",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
