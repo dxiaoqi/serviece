@@ -1,111 +1,23 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: platform-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_READONLY_USER: ${POSTGRES_READONLY_USER}
-      POSTGRES_READONLY_PASSWORD: ${POSTGRES_READONLY_PASSWORD}
-    ports:
-      - "5433:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./deploy/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-      - ./deploy/init-readonly.sh:/docker-entrypoint-initdb.d/init-readonly.sh:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  auth-service:
+  server:
     build:
       context: .
-      args:
-        SERVICE_NAME: auth-service
-    container_name: platform-auth
+    container_name: myseviece-server
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      AUTH_DB_NAME: auth_db
-      JWT_SECRET: ${JWT_SECRET}
-      AUTH_SERVICE_PORT: 3001
-    ports:
-      - "3001:3001"
-    depends_on:
-      postgres:
-        condition: service_healthy
+      PORT: 3000
 
-  stats-service:
-    build:
-      context: .
-      args:
-        SERVICE_NAME: stats-service
-    container_name: platform-stats
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      STATS_DB_NAME: stats_db
-      STATS_SERVICE_PORT: 3002
-    ports:
-      - "3002:3002"
-    depends_on:
-      postgres:
-        condition: service_healthy
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
 
-  api-gateway:
-    build:
-      context: .
-      args:
-        SERVICE_NAME: api-gateway
-    container_name: platform-gateway
-    restart: unless-stopped
-    environment:
-      AUTH_SERVICE_URL: http://auth-service:3001
-      STATS_SERVICE_URL: http://stats-service:3002
-      JWT_SECRET: ${JWT_SECRET}
-      GATEWAY_PORT: 3000
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_CDN_DOMAIN: ${OSS_CDN_DOMAIN:-}
+      OSS_STS_ROLE_ARN: ${OSS_STS_ROLE_ARN:-}
+      OSS_SIGN_EXPIRES_SEC: ${OSS_SIGN_EXPIRES_SEC:-600}
+      OSS_UPLOAD_EXPIRES_SEC: ${OSS_UPLOAD_EXPIRES_SEC:-900}
     ports:
-      - "3005:3000"
-    depends_on:
-      - auth-service
-      - stats-service
-
-  admin-dashboard:
-    build:
-      context: .
-      args:
-        SERVICE_NAME: admin-dashboard
-    container_name: platform-admin-dashboard
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      DASHBOARD_PORT: 3100
-      DASHBOARD_USER: ${DASHBOARD_USER}
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
-      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3005}
-      DB_HOST: postgres
-      DB_PORT: 5432
-      POSTGRES_READONLY_USER: ${POSTGRES_READONLY_USER}
-      POSTGRES_READONLY_PASSWORD: ${POSTGRES_READONLY_PASSWORD}
-    ports:
-      - "${DASHBOARD_PORT}:3100"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-volumes:
-  pgdata:
+      - "${HOST_PORT:-3000}:3000"
